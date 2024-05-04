@@ -29,6 +29,7 @@
 // CMD_KEYPRESSED: payload is always 6 bytes identifying address of node sending keypress event
 #define CMD_ROUTE_TABLE 0x56
 // CMD_KEYPRESSED: payload is a multiple of 6 listing addresses in a routing table
+#define CMD_Data 0x57
 /*******************************************************
  *                Constants
  *******************************************************/
@@ -146,8 +147,14 @@ void static recv_cb(mesh_addr_t *from, mesh_data_t *data)
         }
         ESP_LOGW(MESH_TAG, "Keypressed detected on node: "
                 MACSTR, MAC2STR(data->data + 1));
-    } else {
-        ESP_LOGE(MESH_TAG, "Error in receiving raw mesh data: Unknown command");
+    } else if (data->data[0] == CMD_Data) {
+
+       //ESP_LOGI(MESH_TAG, "HI Received data: %.*s", data->size, (char*)data->data);(
+       printf("myy Received data: %.*s\n", data->size - 1, ((char*)data->data) + 1);
+    }
+    else {
+        
+         ESP_LOGE(MESH_TAG, "Error in receiving raw mesh data: Unknown command");
     }
 }
 
@@ -182,6 +189,7 @@ static void check_button(void* args)
                     err = esp_mesh_send(&s_route_table[i], &data, MESH_DATA_P2P, NULL, 0);
                     ESP_LOGI(MESH_TAG, "Sending to [%d] "
                             MACSTR ": sent with err code: %d", i, MAC2STR(s_route_table[i].addr), err);
+                    
                 }
                 xSemaphoreGive(s_route_table_lock);
             }
@@ -225,28 +233,39 @@ void esp_mesh_mqtt_task(void *arg)
             }
         }
         else {
-            printf("I am not root\n");
-            for (int i = 0; i < s_route_table_size; i++) {
-                ESP_LOGI(MESH_TAG, "my Routing table [%d] "
-                MACSTR, i, MAC2STR(s_route_table[i].addr));
-            } 
-
-            for (int i = 0; i < s_route_table_size; i++) {
+                printf("I am not root\n");
+                for (int i = 0; i < s_route_table_size; i++) {
                     ESP_LOGI(MESH_TAG, "my Routing table [%d] " MACSTR, i, MAC2STR(s_route_table[i].addr));
-                 
-                    sprintf(count_str, "count %d", count++); // Convert count to string
-                    data.size = strlen(count_str) + 1; // Size is length of string plus null terminator
-                    data.proto = MESH_PROTO_BIN;
-                    data.tos = MESH_TOS_P2P;
-                    memcpy(s_mesh_tx_payload, count_str, data.size); // Copy count string to payload
-                    data.data = s_mesh_tx_payload;
-                    esp_err_t err = esp_mesh_send(&s_route_table[i], &data, MESH_DATA_P2P, NULL, 0);
-                    ESP_LOGI(MESH_TAG, "Sending count %s to [%d] " MACSTR ": sent with err code: %d", count_str, i, MAC2STR(s_route_table[i].addr), err);
-                }
+                } 
 
+                // for (int i = 0; i < s_route_table_size; i++) {
+                //     ESP_LOGI(MESH_TAG, "my Routing table [%d] " MACSTR, i, MAC2STR(s_route_table[i].addr));
+                
+                //     sprintf(count_str, "count %d", count++); // Convert count to string
+                //     data.size = strlen(count_str) + 1 + sizeof(CMD_Data); // Size is length of string plus null terminator plus size of CMD_Data
+                //     data.proto = MESH_PROTO_BIN;
+                //     data.tos = MESH_TOS_P2P;
+                //     s_mesh_tx_payload[0] = CMD_Data; // Include CMD_Data in the payload
+                //     memcpy(s_mesh_tx_payload + 1, count_str, strlen(count_str)); // Copy count string to payload
+                //     data.data = s_mesh_tx_payload;
+                //     esp_err_t err = esp_mesh_send(&s_route_table[i], &data, MESH_DATA_P2P, NULL, 0);
+                //     ESP_LOGI(MESH_TAG, "Sending count %s and CMD_Data to [%d] " MACSTR ": sent with err code: %d", count_str, i, MAC2STR(s_route_table[i].addr), err);
+                // }
 
+                sprintf(count_str, "count %d", count++); // Convert count to string
+                data.size = strlen(count_str) + 1 + sizeof(CMD_Data); // Size is length of string plus null terminator plus size of CMD_Data
+                data.proto = MESH_PROTO_BIN;
+                data.tos = MESH_TOS_P2P;
+                s_mesh_tx_payload[0] = CMD_Data; // Include CMD_Data in the payload
+                memcpy(s_mesh_tx_payload + 1, count_str, strlen(count_str)); // Copy count string to payload
+                data.data = s_mesh_tx_payload;
+                printf("data sent to parent node\n");
+                esp_err_t err = esp_mesh_send(&mesh_parent_addr, &data, MESH_DATA_P2P, NULL, 0);
+                ESP_LOGI(MESH_TAG, "Sending %s and CMD_Data to " MACSTR ": sent with err code: %d", count_str, MAC2STR(mesh_parent_addr.addr), err);
 
-        }
+                // Publish count data to MQTT
+                mqtt_app_publish("node_data1", count_str);
+            }
         vTaskDelay(2 * 1000 / portTICK_PERIOD_MS);
     }
     vTaskDelete(NULL);
@@ -261,7 +280,7 @@ void esp_mesh_mqtt_task(void *arg)
     if (!is_comm_mqtt_task_started) {
         xTaskCreate(esp_mesh_mqtt_task, "mqtt task", 3072, NULL, 5, NULL);
         xTaskCreate(check_button, "check button task", 3072, NULL, 5, NULL);
-       xTaskCreate(esp_mesh_p2p_rx_main, "MPRX", 3072, NULL, 5, NULL);
+       //xTaskCreate(esp_mesh_p2p_rx_main, "MPRX", 3072, NULL, 5, NULL);
         //xTaskCreate(esp_mesh_p2p_tx_main, "MPTX", 3072, NULL, 5, NULL);
         is_comm_mqtt_task_started = true;
     }
