@@ -35,6 +35,9 @@
 static const char *MESH_TAG = "mesh_main";
 static const uint8_t MESH_ID[6] = { 0x77, 0x77, 0x77, 0x77, 0x77, 0x76};
 
+#define RX_SIZE          (1500)
+#define TX_SIZE          (1460)
+
 /*******************************************************
  *                Variable Definitions
  *******************************************************/
@@ -47,7 +50,9 @@ static int s_route_table_size = 0;
 static SemaphoreHandle_t s_route_table_lock = NULL;
 static uint8_t s_mesh_tx_payload[CONFIG_MESH_ROUTE_TABLE_SIZE*6+1];
 
-
+static uint8_t tx_buf[TX_SIZE] = { 0, };
+static uint8_t rx_buf[RX_SIZE] = { 0, };
+static bool is_mesh_connected = false;
 /*******************************************************
  *                Function Declarations
  *******************************************************/
@@ -69,6 +74,54 @@ static void initialise_button(void)
     io_conf.pull_down_en = 0;
     gpio_config(&io_conf);
 }
+
+
+
+void esp_mesh_p2p_rx_main(void *arg)
+{
+    int recv_count = 0;
+    esp_err_t err;
+    mesh_addr_t from;
+    int send_count = 0;
+    mesh_data_t data;
+    int flag = 0;
+    data.data = rx_buf;
+    data.size = RX_SIZE;
+    is_running = true;
+
+    while (is_running) {
+         
+        data.size = RX_SIZE;
+        err = esp_mesh_recv(&from, &data, portMAX_DELAY, &flag, NULL, 0);
+        if (err != ESP_OK || !data.size) {
+            ESP_LOGE(MESH_TAG, "err:0x%x, size:%d", err, data.size);
+            continue;
+        }
+        /* extract send count */
+        if (data.size >= sizeof(send_count)) {
+            send_count = (data.data[25] << 24) | (data.data[24] << 16)
+                         | (data.data[23] << 8) | data.data[22];
+        }
+        recv_count++;
+
+        printf("Received data: %.*s\n", data.size, (char*)data.data);
+
+        if (!(recv_count % 1)) {
+            ESP_LOGW(MESH_TAG,
+                     "[#RX:%d/%d][L:%d] parent:"MACSTR", receive from "MACSTR", size:%d, heap:%" PRId32 ", flag:%d[err:0x%x, proto:%d, tos:%d]",
+                     recv_count, send_count, mesh_layer,
+                     MAC2STR(mesh_parent_addr.addr), MAC2STR(from.addr),
+                     data.size, esp_get_minimum_free_heap_size(), flag, err, data.proto,
+                     data.tos);
+        }
+        vTaskDelay(1 * 1000 / portTICK_PERIOD_MS);
+
+    }
+    vTaskDelete(NULL);
+}
+
+
+
 
 void static recv_cb(mesh_addr_t *from, mesh_data_t *data)
 {
@@ -149,6 +202,7 @@ void esp_mesh_mqtt_task(void *arg)
     esp_err_t err;
     mqtt_app_start();
     int count = 0;
+    char count_str[10]; // Buffer to hold count string
     while (is_running) {
         asprintf(&print, "layer:%d IP:" IPSTR, esp_mesh_get_layer(), IP2STR(&s_current_ip));
         ESP_LOGI(MESH_TAG, "Tried to publish %s", print);
@@ -175,10 +229,23 @@ void esp_mesh_mqtt_task(void *arg)
             for (int i = 0; i < s_route_table_size; i++) {
                 ESP_LOGI(MESH_TAG, "my Routing table [%d] "
                 MACSTR, i, MAC2STR(s_route_table[i].addr));
-            }
+            } 
 
-            
-            
+            for (int i = 0; i < s_route_table_size; i++) {
+                    ESP_LOGI(MESH_TAG, "my Routing table [%d] " MACSTR, i, MAC2STR(s_route_table[i].addr));
+                 
+                    sprintf(count_str, "count %d", count++); // Convert count to string
+                    data.size = strlen(count_str) + 1; // Size is length of string plus null terminator
+                    data.proto = MESH_PROTO_BIN;
+                    data.tos = MESH_TOS_P2P;
+                    memcpy(s_mesh_tx_payload, count_str, data.size); // Copy count string to payload
+                    data.data = s_mesh_tx_payload;
+                    esp_err_t err = esp_mesh_send(&s_route_table[i], &data, MESH_DATA_P2P, NULL, 0);
+                    ESP_LOGI(MESH_TAG, "Sending count %s to [%d] " MACSTR ": sent with err code: %d", count_str, i, MAC2STR(s_route_table[i].addr), err);
+                }
+
+
+
         }
         vTaskDelay(2 * 1000 / portTICK_PERIOD_MS);
     }
@@ -194,6 +261,8 @@ void esp_mesh_mqtt_task(void *arg)
     if (!is_comm_mqtt_task_started) {
         xTaskCreate(esp_mesh_mqtt_task, "mqtt task", 3072, NULL, 5, NULL);
         xTaskCreate(check_button, "check button task", 3072, NULL, 5, NULL);
+       xTaskCreate(esp_mesh_p2p_rx_main, "MPRX", 3072, NULL, 5, NULL);
+        //xTaskCreate(esp_mesh_p2p_tx_main, "MPTX", 3072, NULL, 5, NULL);
         is_comm_mqtt_task_started = true;
     }
     return ESP_OK;
